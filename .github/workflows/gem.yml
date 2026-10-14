@@ -40,7 +40,7 @@ jobs:
           # every ABI the rb-sys image supports (3.0 and up), and rake-compiler then
           # overrides the gemspec's `required_ruby_version` to that range, producing a
           # precompiled gem looser than the gemspec's `>= 3.2.0`. Each ABI also adds 9MB.
-          ruby-versions: "3.4"
+          ruby-versions: "3.4,4.0"
       - name: Show the bundled Ruby ABIs
         run: |
           gem=$(find bindings/ruby/pkg -name '*-${{ matrix.platform }}.gem')
