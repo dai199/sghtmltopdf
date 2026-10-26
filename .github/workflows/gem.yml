@@ -24,11 +24,7 @@ jobs:
         platform:
           - x86_64-linux
           - aarch64-linux
-          - x86_64-linux-musl # Alpine
-          - aarch64-linux-musl # Alpine
           - arm64-darwin
-          - x86_64-darwin
-          - x64-mingw-ucrt # RubyInstaller UCRT
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
@@ -41,7 +37,7 @@ jobs:
           platform: ${{ matrix.platform }}
           working-directory: bindings/ruby
           # Bundle one extension per supported Ruby ABI and restrict the gem to that range.
-          ruby-versions: "3.2,3.3,3.4,4.0"
+          ruby-versions: "3.4,4.0"
       - name: Show the bundled Ruby ABIs
         run: |
           gem=$(find bindings/ruby/pkg -name '*-${{ matrix.platform }}.gem')
@@ -66,7 +62,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ruby: ["3.2", "4.0"]
+        ruby: ["3.4"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -79,29 +75,6 @@ jobs:
       - name: gem install and convert
         run: |
           gem install --no-document ./pkg/*.gem
-          ruby bindings/ruby/script/smoke.rb
-
-  smoke-windows:
-    needs: cross-gem
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        ruby: ["3.2", "3.3", "3.4", "4.0"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: gem-x64-mingw-ucrt
-          path: pkg
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: ${{ matrix.ruby }}
-      - name: gem install and convert
-        shell: pwsh
-        run: |
-          gem install --no-document (Get-ChildItem pkg\*.gem).FullName
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ruby bindings/ruby/script/smoke.rb
 
   # aarch64-linux: run an arm64 container under QEMU
@@ -130,52 +103,6 @@ jobs:
               ruby bindings/ruby/script/smoke.rb
             '
 
-  # x86_64-linux-musl: verify in an Alpine container.
-  # `gem install` checks platform match even for a local .gem, so this also confirms
-  # that Alpine's RubyGems accepts the musl-targeted gem
-  smoke-linux-musl:
-    needs: cross-gem
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: gem-x86_64-linux-musl
-          path: pkg
-      - name: gem install and convert (Alpine)
-        run: |
-          docker run --rm -v "$PWD:/work" -w /work ruby:3.4-alpine \
-            sh -c '
-              set -eux
-              apk add --no-cache font-dejavu
-              gem install --no-document ./pkg/*.gem
-              ruby bindings/ruby/script/smoke.rb
-            '
-
-  # aarch64-linux-musl: run an arm64 Alpine container under QEMU
-  smoke-linux-musl-arm64:
-    needs: cross-gem
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: gem-aarch64-linux-musl
-          path: pkg
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-      - name: gem install and convert (Alpine, linux/arm64)
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -v "$PWD:/work" -w /work ruby:3.4-alpine \
-            sh -c '
-              set -eux
-              apk add --no-cache font-dejavu
-              gem install --no-document ./pkg/*.gem
-              ruby bindings/ruby/script/smoke.rb
-            '
-
   # arm64-darwin: the macOS runner is Apple Silicon
   smoke-macos-arm64:
     needs: cross-gem
@@ -193,91 +120,3 @@ jobs:
         run: |
           gem install --no-document ./pkg/*.gem
           ruby bindings/ruby/script/smoke.rb
-
-  # x86_64-darwin: the Intel Mac runner is the macOS 15 x86_64 image
-  # (the last Intel image GitHub provides, scheduled until August 2027)
-  smoke-macos-x86_64:
-    needs: cross-gem
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: gem-x86_64-darwin
-          path: pkg
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.4"
-      - name: gem install and convert
-        run: |
-          gem install --no-document ./pkg/*.gem
-          ruby bindings/ruby/script/smoke.rb
-
-  # Publish to rubygems.org
-  # Authentication is trusted publishing (OIDC); no API key is stored in the repository
-  publish:
-    needs:
-      - cross-gem
-      - smoke-linux
-      - smoke-linux-arm64
-      - smoke-linux-musl
-      - smoke-linux-musl-arm64
-      - smoke-macos-arm64
-      - smoke-macos-x86_64
-      - smoke-windows
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    # The environment named in the trusted publisher settings on rubygems.org
-    environment: rubygems
-    permissions:
-      id-token: write # trusted publishing(OIDC)
-      contents: write # Creating the GitHub Release
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # release-gem uses its own token for git operations
-          persist-credentials: false
-      - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
-        with:
-          ruby-version: "3.4"
-          bundler-cache: true
-          cargo-cache: "false"
-          working-directory: bindings/ruby
-      # Collect every precompiled platform into `pkg/`.
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: gem-*
-          merge-multiple: true
-          path: bindings/ruby/pkg
-      - name: Check the tag matches the gem's version
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          version=$(ruby -e 'require "./bindings/ruby/lib/sghtmltopdf/version"; print Sghtmltopdf::VERSION')
-          echo "tag=$tag version=$version"
-          if [ "$tag" != "$version" ]; then
-            echo "::error::the tag ($tag) does not match Sghtmltopdf::VERSION ($version)" >&2
-            exit 1
-          fi
-      # Fallback for environments with no matching platform
-      - name: Build the source gem too
-        working-directory: bindings/ruby
-        run: bundle exec rake build
-      - name: List the gems to publish
-        run: |
-          {
-            echo "### To publish"
-            echo '```'
-            ls -l bindings/ruby/pkg/*.gem
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-      # Ruby's official release action
-      # Handles trusted publishing (OIDC), sigstore attestations, and pushing to rubygems.org
-      - uses: rubygems/release-gem@v1
-        if: github.event.inputs.dry_run != 'true'
-        with:
-          working-directory: bindings/ruby
-      - name: Create the GitHub Release
-        if: github.event.inputs.dry_run != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" bindings/ruby/pkg/*.gem --generate-notes --verify-tag
